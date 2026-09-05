@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { students, assessments, questionAnalyses, courseRecommendations } from "@/db/schema";
-import { analyzeStudentPaper } from "@/lib/reasoningEngine";
+import { analyzeWithGemini } from "@/lib/geminiAnalysis";
 import { seedDatabase } from "@/db/seed";
 import { eq, desc } from "drizzle-orm";
 
@@ -55,8 +55,98 @@ export async function POST(req: Request) {
     } = body;
 
     // Run AI Reasoning Analysis
-    const analysis = analyzeStudentPaper(title, subject, rawQuestionText, rawAnswerText);
-    const fp = analysis.fingerprint;
+    // Run real Gemini AI analysis
+const gemini = await analyzeWithGemini(
+  rawQuestionText,
+  rawAnswerText,
+  subject
+);
+
+const analysis = {
+  title,
+  subject,
+  paperType: "Question Paper + Student Answers",
+
+  fingerprint: {
+    overallScore: gemini.overallScore,
+
+    reasoningIndex: Math.round(
+      (
+        gemini.skills.logicalThinking +
+        gemini.skills.criticalThinking +
+        gemini.skills.problemSolving
+      ) / 3
+    ),
+
+    grammarScore: gemini.skills.grammar,
+    vocabularyScore: gemini.skills.vocabulary,
+    logicalThinkingScore: gemini.skills.logicalThinking,
+    criticalThinkingScore: gemini.skills.criticalThinking,
+    problemSolvingScore: gemini.skills.problemSolving,
+    mathAbilityScore: gemini.skills.mathematicalAbility,
+
+    ocrConfidence: 0,
+
+    cognitiveStyle:
+      gemini.skills.logicalThinking >= 85 &&
+      gemini.skills.mathematicalAbility >= 85
+        ? "Algorithmic & Quantitative Thinker"
+        : gemini.skills.criticalThinking >= 85
+          ? "Critical & Analytical Thinker"
+          : "Developing Analytical Thinker",
+
+    strengths: gemini.strengths,
+    weaknesses: gemini.weaknesses,
+    improvementAreas: gemini.improvements,
+  },
+
+  questions: gemini.answerFeedback.map((item, index) => {
+    const text = item.correctness.toLowerCase();
+
+    const verdict =
+      text.includes("incorrect")
+        ? "incorrect"
+        : text.includes("partial")
+          ? "partial"
+          : "correct";
+
+    const obtainedMarks =
+      verdict === "correct"
+        ? 10
+        : verdict === "partial"
+          ? 5
+          : 0;
+
+    return {
+      questionNum: index + 1,
+      questionText: item.question,
+      studentAnswer: item.answer,
+      maxMarks: 10,
+      obtainedMarks,
+      skillCategory: subject,
+      verdict,
+      aiFeedback: item.feedback,
+      detectedErrors: [],
+      idealApproach: item.reasoning,
+    };
+  }),
+
+  recommendations: gemini.courseRecommendations.map((item) => ({
+    courseName: item.course,
+    field: subject,
+    matchPercentage: item.matchPercentage,
+    suitabilityReason: item.reason,
+    keyRequiredSkills: [],
+    skillsToImprove: gemini.improvements,
+    careerPaths: [],
+    topUniversities: [],
+  })),
+
+  rawQuestionText,
+  rawAnswerText,
+};
+
+const fp = analysis.fingerprint;
 
     // 1. Create or Find Student
     let [student] = await db
